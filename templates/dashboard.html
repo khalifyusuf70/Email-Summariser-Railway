@@ -257,7 +257,7 @@
             border-radius: 12px;
             box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
             margin-bottom: 30px;
-            overflow: hidden;
+            overflow: visible;
         }
         
         .table-header {
@@ -284,6 +284,10 @@
             color: #374151;
             border-bottom: 2px solid #e5e7eb;
             font-size: 14px;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            box-shadow: 0 2px 2px -1px rgba(0, 0, 0, 0.1);
         }
         
         .email-table td {
@@ -653,22 +657,23 @@
             margin-bottom: 20px;
             flex-wrap: wrap;
             align-items: center;
+            background: white;
+            padding: 15px 20px;
+            border-radius: 12px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
         }
         
         .filter-group {
             display: flex;
             align-items: center;
             gap: 10px;
-            background: white;
-            padding: 10px 15px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
         }
         
         .filter-group label {
             font-weight: 500;
             color: #374151;
             font-size: 14px;
+            white-space: nowrap;
         }
         
         .filter-group select {
@@ -682,7 +687,7 @@
         
         .search-box {
             flex: 1;
-            max-width: 300px;
+            min-width: 250px;
             position: relative;
         }
         
@@ -712,37 +717,48 @@
             gap: 10px;
         }
         
-        .pagination {
-            display: flex;
-            gap: 5px;
+        .email-count-badge {
+            background: #4f46e5;
+            color: white;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 500;
+            display: inline-flex;
             align-items: center;
+            gap: 6px;
         }
         
-        .pagination-btn {
-            padding: 8px 12px;
-            background: white;
-            border: 1px solid #d1d5db;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 14px;
-            color: #374151;
-            transition: all 0.3s ease;
+        .email-count-badge i {
+            font-size: 12px;
         }
         
-        .pagination-btn:hover:not(:disabled) {
+        .filter-stats {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            margin-bottom: 15px;
+        }
+        
+        .filter-stat-item {
             background: #f3f4f6;
-            border-color: #4f46e5;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 13px;
+            color: #4b5563;
+            display: flex;
+            align-items: center;
+            gap: 6px;
         }
         
-        .pagination-btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
+        .filter-stat-item i {
+            color: #4f46e5;
         }
         
-        .pagination-info {
-            font-size: 14px;
-            color: #6b7280;
-            margin: 0 10px;
+        .filter-stat-item span {
+            font-weight: 600;
+            color: #4f46e5;
+            margin-left: 4px;
         }
         
         .email-date {
@@ -750,11 +766,64 @@
             color: #9ca3af;
             margin-top: 5px;
         }
+        
+        /* Scroll to top button */
+        .scroll-top {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            background: #4f46e5;
+            color: white;
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            box-shadow: 0 4px 10px rgba(79, 70, 229, 0.3);
+            transition: all 0.3s ease;
+            opacity: 0;
+            visibility: hidden;
+            z-index: 100;
+        }
+        
+        .scroll-top.visible {
+            opacity: 1;
+            visibility: visible;
+        }
+        
+        .scroll-top:hover {
+            background: #4338ca;
+            transform: translateY(-3px);
+        }
+        
+        /* Table container with max height for scrolling */
+        .table-wrapper {
+            max-height: 600px;
+            overflow-y: auto;
+            border-radius: 0 0 12px 12px;
+            border: 1px solid #e5e7eb;
+            border-top: none;
+        }
+        
+        /* Make header sticky */
+        .email-table thead th {
+            position: sticky;
+            top: 0;
+            background: #f8fafc;
+            z-index: 10;
+        }
     </style>
     <!-- Font Awesome for icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </head>
 <body>
+    <!-- Scroll to top button -->
+    <div class="scroll-top" id="scrollTop" onclick="scrollToTop()">
+        <i class="fas fa-arrow-up"></i>
+    </div>
+
     <!-- Export Modal -->
     <div id="exportModal" class="modal">
         <div class="modal-content">
@@ -958,6 +1027,16 @@
             </button>
         </div>
         
+        <!-- Filter Stats -->
+        <div class="filter-stats" id="filterStats" style="display: none;">
+            <div class="filter-stat-item">
+                <i class="fas fa-ban"></i> Filtered Notifications: <span id="filteredNotifications">0</span>
+            </div>
+            <div class="filter-stat-item">
+                <i class="fas fa-copy"></i> Filtered Duplicates: <span id="filteredDuplicates">0</span>
+            </div>
+        </div>
+        
         <div class="filter-controls">
             <div class="filter-group">
                 <label for="filterSender">Sender:</label>
@@ -980,6 +1059,7 @@
                     <option value="sender">Sender</option>
                     <option value="receiver">Receiver</option>
                     <option value="subject">Subject</option>
+                    <option value="date">Date</option>
                 </select>
             </div>
             
@@ -997,24 +1077,15 @@
                         <button class="refresh-btn" onclick="refreshEmailTable()">
                             <i class="fas fa-redo"></i> Refresh Table
                         </button>
-                        <span style="margin-left: 10px; font-size: 0.9em;" id="emailCount">
-                            Loading...
+                        <span class="email-count-badge" id="emailCount">
+                            <i class="fas fa-envelope"></i> Loading...
                         </span>
-                    </div>
-                    
-                    <div class="pagination">
-                        <button class="pagination-btn" onclick="previousPage()" id="prevPageBtn" disabled>
-                            <i class="fas fa-chevron-left"></i>
-                        </button>
-                        <span class="pagination-info" id="pageInfo">Page 1 of 1</span>
-                        <button class="pagination-btn" onclick="nextPage()" id="nextPageBtn" disabled>
-                            <i class="fas fa-chevron-right"></i>
-                        </button>
                     </div>
                 </div>
             </div>
             
-            <div style="overflow-x: auto;">
+            <!-- Scrollable table wrapper -->
+            <div class="table-wrapper" id="tableWrapper">
                 <table class="email-table" id="emailTable">
                     <thead>
                         <tr>
@@ -1041,9 +1112,6 @@
         // Global variables for data management
         let allEmailData = [];
         let filteredEmailData = [];
-        let currentPage = 1;
-        const itemsPerPage = 20;
-        let currentExportFormat = 'csv';
         let sendersList = [];
         let receiversList = [];
         
@@ -1058,7 +1126,26 @@
             const today = new Date().toISOString().split('T')[0];
             document.getElementById('exportStartDate').value = today;
             document.getElementById('exportEndDate').value = today;
+            
+            // Add scroll event listener for scroll-to-top button
+            window.addEventListener('scroll', toggleScrollTop);
         });
+        
+        function toggleScrollTop() {
+            const scrollTop = document.getElementById('scrollTop');
+            if (window.pageYOffset > 300) {
+                scrollTop.classList.add('visible');
+            } else {
+                scrollTop.classList.remove('visible');
+            }
+        }
+        
+        function scrollToTop() {
+            window.scrollTo({
+                top: 0,
+                behavior: 'smooth'
+            });
+        }
         
         function toggleCustomDateRange() {
             const dateRange = document.getElementById('exportDateRange').value;
@@ -1103,6 +1190,13 @@
                     updateDebugContent(`❌ Database error: ${dbData.error}`, 'error');
                 } else {
                     updateDebugContent(`✅ Database: ${dbData.summary_runs_count || 0} runs, ${dbData.email_data_count || 0} emails`, 'success');
+                    
+                    // Update filter stats if available
+                    if (dbData.latest_run && (dbData.latest_run.filtered_notifications || dbData.latest_run.filtered_duplicates)) {
+                        document.getElementById('filteredNotifications').textContent = dbData.latest_run.filtered_notifications || 0;
+                        document.getElementById('filteredDuplicates').textContent = dbData.latest_run.filtered_duplicates || 0;
+                        document.getElementById('filterStats').style.display = 'flex';
+                    }
                 }
                 
                 // Test stats endpoint
@@ -1195,6 +1289,13 @@
             document.getElementById('successRate').textContent = stats.success_rate ? stats.success_rate + '%' : '0%';
             document.getElementById('lastRun').textContent = stats.last_run || 'Never';
             
+            // Update filter stats if available
+            if (stats.filtered_notifications || stats.filtered_duplicates) {
+                document.getElementById('filteredNotifications').textContent = stats.filtered_notifications || 0;
+                document.getElementById('filteredDuplicates').textContent = stats.filtered_duplicates || 0;
+                document.getElementById('filterStats').style.display = 'flex';
+            }
+            
             // Update status indicator
             const statusIndicator = document.getElementById('statusIndicator');
             const statusText = document.getElementById('statusText');
@@ -1222,7 +1323,7 @@
             updateFilterDropdown('filterSender', sendersList);
             updateFilterDropdown('filterReceiver', receiversList);
             
-            // Apply filters and pagination
+            // Apply filters and render all data (no pagination)
             applyFilters();
         }
         
@@ -1277,42 +1378,25 @@
                         return (a.to || '').localeCompare(b.to || '');
                     case 'subject':
                         return (a.subject || '').localeCompare(b.subject || '');
+                    case 'date':
+                        return new Date(b.date || 0) - new Date(a.date || 0);
                     default:
                         return (a.number || 0) - (b.number || 0);
                 }
             });
             
-            // Reset to first page
-            currentPage = 1;
-            
-            // Update table with paginated data
-            updatePagination();
-            renderTablePage();
-        }
-        
-        function updatePagination() {
-            const totalPages = Math.ceil(filteredEmailData.length / itemsPerPage);
-            const prevBtn = document.getElementById('prevPageBtn');
-            const nextBtn = document.getElementById('nextPageBtn');
-            const pageInfo = document.getElementById('pageInfo');
-            
-            prevBtn.disabled = currentPage <= 1;
-            nextBtn.disabled = currentPage >= totalPages;
-            
-            pageInfo.textContent = `Page ${currentPage} of ${totalPages} (${filteredEmailData.length} emails)`;
-            
             // Update email count
-            document.getElementById('emailCount').textContent = 
-                `${filteredEmailData.length} email${filteredEmailData.length !== 1 ? 's' : ''} (${allEmailData.length} total)`;
+            document.getElementById('emailCount').innerHTML = 
+                `<i class="fas fa-envelope"></i> ${filteredEmailData.length} email${filteredEmailData.length !== 1 ? 's' : ''} (${allEmailData.length} total)`;
+            
+            // Render all data in the table (no pagination)
+            renderEmailTable();
         }
         
-        function renderTablePage() {
+        function renderEmailTable() {
             const tableBody = document.getElementById('emailTableBody');
-            const startIndex = (currentPage - 1) * itemsPerPage;
-            const endIndex = startIndex + itemsPerPage;
-            const pageData = filteredEmailData.slice(startIndex, endIndex);
             
-            if (!pageData || pageData.length === 0) {
+            if (!filteredEmailData || filteredEmailData.length === 0) {
                 tableBody.innerHTML = `
                     <tr>
                         <td colspan="5" class="no-data">
@@ -1326,11 +1410,10 @@
             
             let tableHTML = '';
             
-            pageData.forEach((email, index) => {
-                const globalIndex = startIndex + index + 1;
+            filteredEmailData.forEach((email, index) => {
                 tableHTML += `
                     <tr>
-                        <td class="email-number">${globalIndex}</td>
+                        <td class="email-number">${index + 1}</td>
                         <td class="email-sender">
                             <div>${escapeHtml(email.from || 'Unknown')}</div>
                             ${email.date ? `<div class="email-date">${formatDate(email.date)}</div>` : ''}
@@ -1352,23 +1435,6 @@
                 return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
             } catch (e) {
                 return dateString;
-            }
-        }
-        
-        function previousPage() {
-            if (currentPage > 1) {
-                currentPage--;
-                updatePagination();
-                renderTablePage();
-            }
-        }
-        
-        function nextPage() {
-            const totalPages = Math.ceil(filteredEmailData.length / itemsPerPage);
-            if (currentPage < totalPages) {
-                currentPage++;
-                updatePagination();
-                renderTablePage();
             }
         }
         
@@ -1405,7 +1471,7 @@
         }
         
         async function triggerManualRun() {
-            const btn = event.target;
+            const btn = event.target.closest('button');
             const originalText = btn.innerHTML;
             
             btn.classList.add('loading');
