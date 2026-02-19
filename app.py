@@ -33,7 +33,7 @@ app.secret_key = os.getenv('FLASK_SECRET_KEY', 'dev-secret-key-change-in-product
 DEFAULT_USERNAME = os.getenv('DASHBOARD_USERNAME', 'admin')
 DEFAULT_PASSWORD = os.getenv('DASHBOARD_PASSWORD', 'admin123')
 
-# Hash the password at module level (no global declaration needed in functions)
+# Hash the password at module level
 HASHED_PASSWORD = bcrypt.hashpw(DEFAULT_PASSWORD.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 print(f"🔐 Password hash initialized for user: {DEFAULT_USERNAME}")
 
@@ -111,7 +111,7 @@ def logout():
 @admin_required
 def change_password():
     """Change password page (admin only)"""
-    global HASHED_PASSWORD  # Declare as global since we need to modify it
+    global HASHED_PASSWORD
     
     if request.method == 'POST':
         current_password = request.form.get('current_password', '').strip()
@@ -155,7 +155,7 @@ def change_password():
 # ==================== DATABASE INITIALIZATION ====================
 
 def init_db():
-    """Initialize SQLite database - CALL THIS BEFORE ANY DATABASE OPERATIONS"""
+    """Initialize SQLite database with enhanced filtering stats"""
     db_path = get_db_path()
     print(f"📁 Initializing database at: {db_path}")
     conn = sqlite3.connect(db_path)
@@ -171,6 +171,8 @@ def init_db():
             run_date TEXT NOT NULL,
             total_emails INTEGER,
             processed_emails INTEGER,
+            filtered_notifications INTEGER DEFAULT 0,
+            filtered_duplicates INTEGER DEFAULT 0,
             success_rate REAL,
             deepseek_tokens INTEGER,
             status TEXT,
@@ -697,7 +699,9 @@ def debug_database():
                 "id": latest_run[0] if latest_run else None,
                 "date": latest_run[1] if latest_run else None,
                 "total_emails": latest_run[2] if latest_run else None,
-                "processed_emails": latest_run[3] if latest_run else None
+                "processed_emails": latest_run[3] if latest_run else None,
+                "filtered_notifications": latest_run[4] if latest_run and len(latest_run) > 4 else None,
+                "filtered_duplicates": latest_run[5] if latest_run and len(latest_run) > 5 else None
             } if latest_run else None,
             "sample_emails": [
                 {
@@ -728,13 +732,13 @@ def fix_database():
         conn = sqlite3.connect(db_path)
         c = conn.cursor()
         
-        # Add a test run
+        # Add a test run with filter stats
         current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         c.execute('''
             INSERT INTO summary_runs 
-            (run_date, total_emails, processed_emails, success_rate, status)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (current_time, 2, 2, 100.0, 'test'))
+            (run_date, total_emails, processed_emails, filtered_notifications, filtered_duplicates, success_rate, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (current_time, 3, 2, 1, 0, 66.7, 'test'))
         
         run_id = c.lastrowid
         
@@ -780,6 +784,12 @@ def force_test_run():
                 "to": "archives@jubalandstate.so",
                 "subject": "Test Email 2", 
                 "body": "Another test email to verify dashboard functionality."
+            },
+            {
+                "from": "postmaster@jubalandstate.so",
+                "to": "archives@jubalandstate.so",
+                "subject": "Undelivered Mail Returned to Sender",
+                "body": "This is a test notification email that should be filtered out."
             }
         ]
         
@@ -788,13 +798,19 @@ def force_test_run():
             2: "This is a test summary for email 2. The dashboard should display this data properly."
         }
         
+        filter_stats = {
+            'notifications': 1,
+            'duplicates': 0
+        }
+        
         # Store sample data
-        success = store_email_data_for_dashboard(sample_emails, sample_summaries)
+        success = store_email_data_for_dashboard(sample_emails, sample_summaries, filter_stats)
         
         return jsonify({
             "status": "success" if success else "error",
             "message": "Test data added to dashboard" if success else "Failed to add test data",
-            "emails_added": len(sample_emails)
+            "emails_added": len(sample_summaries),
+            "filtered_notifications": filter_stats['notifications']
         })
         
     except Exception as e:
@@ -822,7 +838,9 @@ def get_stats():
             stats = {
                 "total_emails_today": latest_run[2] or 0,
                 "emails_processed": latest_run[3] or 0,
-                "success_rate": round(latest_run[4] or 0, 1),
+                "filtered_notifications": latest_run[4] or 0,
+                "filtered_duplicates": latest_run[5] or 0,
+                "success_rate": round(latest_run[6] or 0, 1),
                 "last_run": latest_run[1],
                 "next_run": (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d 09:00:00'),
                 "deepseek_usage": "Calculating...",
@@ -834,6 +852,8 @@ def get_stats():
             stats = {
                 "total_emails_today": 0,
                 "emails_processed": 0,
+                "filtered_notifications": 0,
+                "filtered_duplicates": 0,
                 "success_rate": 0,
                 "last_run": "Never",
                 "next_run": (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d 09:00:00'),
@@ -849,7 +869,7 @@ def get_stats():
 @app.route('/api/recent-summaries')
 @login_required
 def get_recent_summaries():
-    """API endpoint for recent email summaries - FIXED VERSION"""
+    """API endpoint for recent email summaries"""
     try:
         db_path = get_db_path()
         conn = sqlite3.connect(db_path)
@@ -976,6 +996,148 @@ class EmailSummarizerAgent:
             
         self.deepseek_api_url = "https://api.deepseek.com/v1/chat/completions"
         self.imap_port = 993
+        
+        # Patterns to identify notification/undelivered emails
+        self.notification_patterns = [
+            r'postmaster',
+            r'mailer-daemon',
+            r'mail delivery system',
+            r'undelivered',
+            r'delivery failure',
+            r'delivery status',
+            r'returned mail',
+            r'failure notice',
+            r'undeliverable',
+            r'delivery report',
+            r'not delivered',
+            r'could not be delivered',
+            r'delivery failed',
+            r'message failed',
+            r'delivery error',
+            r'status:.*failed',
+            r'status:.*undelivered',
+            r'auto-?reply',
+            r'automatic reply',
+            r'out of office',
+            r'vacation reply',
+            r'away from office',
+            r'email not found',
+            r'invalid recipient',
+            r'no such user',
+            r'user unknown',
+            r'account disabled'
+        ]
+        self.notification_regex = re.compile('|'.join(self.notification_patterns), re.IGNORECASE)
+    
+    def is_notification_email(self, email_data):
+        """Check if email is a notification/postmaster/undelivered message"""
+        # Check subject
+        subject = email_data.get('subject', '').lower()
+        if self.notification_regex.search(subject):
+            print(f"📢 Filtering notification email: {subject[:100]}...")
+            return True
+        
+        # Check from address
+        from_addr = email_data.get('from', '').lower()
+        notification_senders = ['postmaster', 'mailer-daemon', 'mailerdaemon']
+        if any(sender in from_addr for sender in notification_senders):
+            print(f"📢 Filtering email from notification sender: {from_addr}")
+            return True
+        
+        # Check body for undelivered indicators
+        body = email_data.get('body', '').lower()
+        undelivered_indicators = [
+            'undelivered', 'not delivered', 'delivery failed', 
+            'delivery status', 'failure notice', 'returned mail',
+            'could not be delivered', 'message failed', 'recipient unknown',
+            'no such user', 'user unknown', 'invalid recipient'
+        ]
+        if any(indicator in body for indicator in undelivered_indicators):
+            print(f"📢 Filtering undelivered notification email")
+            return True
+        
+        return False
+    
+    def normalize_email_content(self, email_data):
+        """Create a normalized version of email content for duplicate detection"""
+        # Normalize subject (remove common prefixes like Re:, Fwd:, etc.)
+        subject = email_data.get('subject', '')
+        subject = re.sub(r'^(re|fwd?|fw|aw|antw|enc|r):\s*', '', subject, flags=re.IGNORECASE)
+        subject = re.sub(r'\s+', ' ', subject).strip().lower()
+        
+        # Normalize body (remove extra whitespace, lower case)
+        body = email_data.get('body', '')
+        # Take first 500 chars of body for comparison (to avoid memory issues)
+        body = body[:500]
+        body = re.sub(r'\s+', ' ', body).strip().lower()
+        
+        return {
+            'subject': subject,
+            'body_hash': hash(body) if body else None,
+            'body_preview': body[:100]  # For debugging
+        }
+    
+    def filter_duplicate_emails(self, emails_data):
+        """Filter out duplicate emails (same content sent to multiple recipients)"""
+        unique_emails = []
+        seen_content = set()
+        
+        print(f"🔍 Checking {len(emails_data)} emails for duplicates...")
+        
+        for email in emails_data:
+            normalized = self.normalize_email_content(email)
+            
+            # Create a content signature (subject + body hash)
+            if normalized['body_hash']:
+                content_signature = f"{normalized['subject']}|{normalized['body_hash']}"
+            else:
+                # If no body, just use subject
+                content_signature = normalized['subject']
+            
+            # Skip if we've seen this content before
+            if content_signature in seen_content:
+                print(f"🔄 Duplicate email found: '{normalized['subject'][:50]}...' - skipping")
+                continue
+            
+            seen_content.add(content_signature)
+            unique_emails.append(email)
+        
+        duplicates_removed = len(emails_data) - len(unique_emails)
+        if duplicates_removed > 0:
+            print(f"✅ Removed {duplicates_removed} duplicate emails")
+        
+        return unique_emails, duplicates_removed
+    
+    def filter_emails(self, emails_data):
+        """Apply all filters (notifications and duplicates)"""
+        if not emails_data:
+            return [], {'notifications': 0, 'duplicates': 0}
+        
+        print(f"🔍 Starting email filtering...")
+        print(f"📧 Initial email count: {len(emails_data)}")
+        
+        filter_stats = {'notifications': 0, 'duplicates': 0}
+        
+        # First filter out notification emails
+        filtered_emails = []
+        
+        for email in emails_data:
+            if self.is_notification_email(email):
+                filter_stats['notifications'] += 1
+                continue
+            filtered_emails.append(email)
+        
+        if filter_stats['notifications'] > 0:
+            print(f"✅ Filtered out {filter_stats['notifications']} notification/undelivered emails")
+        
+        # Then filter duplicates
+        unique_emails, duplicates_removed = self.filter_duplicate_emails(filtered_emails)
+        filter_stats['duplicates'] = duplicates_removed
+        
+        print(f"📧 Final email count after all filtering: {len(unique_emails)}")
+        print(f"📊 Filter stats: {filter_stats}")
+        
+        return unique_emails, filter_stats
     
     def fetch_emails_last_24h(self):
         try:
@@ -993,7 +1155,7 @@ class EmailSummarizerAgent:
                 print("📭 No emails found")
                 mail.close()
                 mail.logout()
-                return []
+                return [], {'notifications': 0, 'duplicates': 0}
                 
             email_ids = messages[0].split()
             print(f"✅ Found {len(email_ids)} emails in last 24 hours")
@@ -1036,13 +1198,18 @@ class EmailSummarizerAgent:
             mail.close()
             mail.logout()
             
-            print(f"✅ Successfully processed {len(emails_data)} emails")
-            return emails_data
+            print(f"✅ Successfully processed {len(emails_data)} raw emails")
+            
+            # Apply filtering before returning
+            filtered_emails, filter_stats = self.filter_emails(emails_data)
+            
+            print(f"✅ Final filtered emails: {len(filtered_emails)}")
+            return filtered_emails, filter_stats
             
         except Exception as e:
             print(f"❌ Error fetching emails: {e}")
             print(f"Full traceback: {traceback.format_exc()}")
-            return []
+            return [], {'notifications': 0, 'duplicates': 0}
     
     def decode_email_header(self, header):
         if not header:
@@ -1104,7 +1271,7 @@ class EmailSummarizerAgent:
         print(f"📝 Summarizing {len(emails_data)} emails in batches...")
         
         # Process emails in smaller batches
-        batch_size = 10  # Reduced from 20 to avoid token limits
+        batch_size = 10
         all_summaries = {}
         
         for batch_num in range(0, len(emails_data), batch_size):
@@ -1165,7 +1332,7 @@ class EmailSummarizerAgent:
                     "content": prompt
                 }
             ],
-            "max_tokens": 2000,  # Reduced for smaller batches
+            "max_tokens": 2000,
             "temperature": 0.3
         }
         
@@ -1214,7 +1381,7 @@ class EmailSummarizerAgent:
                     # Clean up the summary
                     summary = re.sub(r'\*\*', '', summary)
                     summary = re.sub(r'\s+', ' ', summary)
-                    summary = summary[:400]  # Limit length for table
+                    summary = summary[:400]
                     summaries[email_num] = summary
                     found = True
                     break
@@ -1289,16 +1456,17 @@ class EmailSummarizerAgent:
         print(f"{'='*60}")
         
         try:
-            # Step 1: Fetch ALL emails from last 24 hours
-            emails_data = self.fetch_emails_last_24h()
+            # Step 1: Fetch and filter ALL emails from last 24 hours
+            emails_data, filter_stats = self.fetch_emails_last_24h()
             
             if not emails_data:
-                print("📭 No emails to process")
-                # Still create an empty run record
-                store_email_data_for_dashboard([], {})
+                print("📭 No emails to process after filtering")
+                # Still create an empty run record with filter stats
+                store_email_data_for_dashboard([], {}, filter_stats)
                 return
                 
-            print(f"📧 Processing {len(emails_data)} emails...")
+            print(f"📧 Processing {len(emails_data)} filtered emails...")
+            print(f"📊 Filter stats: {filter_stats}")
             
             # Step 2: Summarize ALL emails in batches
             all_summaries = self.summarize_emails_in_batches(emails_data)
@@ -1306,7 +1474,7 @@ class EmailSummarizerAgent:
             print(f"📝 Generated {len(all_summaries)} summaries out of {len(emails_data)} emails")
             
             # Step 3: Store the processed emails and summaries for the dashboard
-            storage_success = store_email_data_for_dashboard(emails_data, all_summaries)
+            storage_success = store_email_data_for_dashboard(emails_data, all_summaries, filter_stats)
             
             if storage_success:
                 print("✅ Email data successfully stored for dashboard")
@@ -1328,6 +1496,7 @@ class EmailSummarizerAgent:
             print(f"\n✅ COMPLETE summary process finished at {datetime.now()}")
             print(f"📊 Processed {len(emails_data)} emails total")
             print(f"📋 Generated {len(all_summaries)} summaries")
+            print(f"📊 Filtered out: {filter_stats['notifications']} notifications, {filter_stats['duplicates']} duplicates")
             print(f"💾 Data sent to dashboard successfully")
                 
         except Exception as e:
@@ -1336,8 +1505,8 @@ class EmailSummarizerAgent:
 
 # ==================== DATABASE FUNCTIONS ====================
 
-def store_email_data_for_dashboard(emails_data, all_summaries):
-    """Store processed email data for dashboard display - FIXED VERSION"""
+def store_email_data_for_dashboard(emails_data, all_summaries, filter_stats=None):
+    """Store processed email data for dashboard display with filter stats"""
     try:
         db_path = get_db_path()
         print(f"💾 Storing {len(emails_data)} emails in database at: {db_path}")
@@ -1351,14 +1520,21 @@ def store_email_data_for_dashboard(emails_data, all_summaries):
         processed_emails = len(all_summaries)
         success_rate = (processed_emails / total_emails * 100) if total_emails > 0 else 0
         
+        # Get filter stats if provided
+        filtered_notifications = filter_stats.get('notifications', 0) if filter_stats else 0
+        filtered_duplicates = filter_stats.get('duplicates', 0) if filter_stats else 0
+        
         c.execute('''
             INSERT INTO summary_runs 
-            (run_date, total_emails, processed_emails, success_rate, status)
-            VALUES (?, ?, ?, ?, ?)
+            (run_date, total_emails, processed_emails, filtered_notifications, 
+             filtered_duplicates, success_rate, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         ''', (
             current_time,
             total_emails,
             processed_emails,
+            filtered_notifications,
+            filtered_duplicates,
             success_rate,
             'completed'
         ))
@@ -1398,6 +1574,8 @@ def store_email_data_for_dashboard(emails_data, all_summaries):
         print(f"✅ Database storage complete:")
         print(f"   ✅ Run ID: {run_id}")
         print(f"   ✅ Emails stored: {inserted_count}/{total_emails}")
+        print(f"   ✅ Filtered notifications: {filtered_notifications}")
+        print(f"   ✅ Filtered duplicates: {filtered_duplicates}")
         print(f"   ✅ Success rate: {success_rate:.1f}%")
         
         return inserted_count > 0
@@ -1417,7 +1595,7 @@ def verify_data_storage():
         
         # Check latest run
         c.execute('''
-            SELECT id, run_date, total_emails, processed_emails 
+            SELECT id, run_date, total_emails, processed_emails, filtered_notifications, filtered_duplicates
             FROM summary_runs 
             ORDER BY id DESC LIMIT 1
         ''')
@@ -1428,8 +1606,9 @@ def verify_data_storage():
             conn.close()
             return False
             
-        run_id, run_date, total_emails, processed_emails = latest_run
+        run_id, run_date, total_emails, processed_emails, filtered_notifications, filtered_duplicates = latest_run
         print(f"📋 Latest run: ID={run_id}, Date={run_date}, Total Emails={total_emails}, Processed={processed_emails}")
+        print(f"📋 Filtered: {filtered_notifications} notifications, {filtered_duplicates} duplicates")
         
         # Check email data for this run
         c.execute('SELECT COUNT(*) FROM email_data WHERE run_id = ?', (run_id,))
